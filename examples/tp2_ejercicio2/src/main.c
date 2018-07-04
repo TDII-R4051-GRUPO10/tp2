@@ -32,19 +32,20 @@
 
 /*==================[inclusions]=============================================*/
 
-#include "../../tp2_ejercicio2/inc/main.h"
+#include "../../tp2_ejercicio3/inc/main.h"
 
-#include "../../tp2_ejercicio2/inc/FreeRTOSConfig.h"
+#include "../../tp2_ejercicio3/inc/FreeRTOSConfig.h"
 #include "board.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
-
 /*==================[macros and definitions]=================================*/
 
 /*==================[internal data declaration]==============================*/
 
 xQueueHandle xQueue = NULL;
+xQueueHandle xQueue2 = NULL;
+xQueueHandle xQueue3 = NULL;
 
 //Estructura de información el evento tecla
 typedef struct _TECLA
@@ -61,22 +62,20 @@ static void initHardware(void);
 /*==================[internal data definition]===============================*/
 #define mainQUEUE_LENGTH					( 5 )
 
-#define REFRESH_RATE_ms 500
+#define REFRESH_RATE_ms 700
 #define TIEMPO_DE_DIAGNOSTICO_ms 2000
 #define SCAN_RATE_ms 150
 #define TIEMPO_DE_DEBOUNCE_ms 20
 
-#define MASK_REDLIGHT	1
+#define MASK_REDLIGHT	4
 #define MASK_GREENLIGHT	2
-#define MASK_BLUELIGHT	4
+#define MASK_BLUELIGHT	1
 
 #define BOTON_NO_PRESIONADO 0
 #define BOTON_PRESIONADO	1
 
 unsigned int tiempo_de_diagnostico = TIEMPO_DE_DIAGNOSTICO_ms;
 int tiempo_de_pulsacion = -1;
-#define REFRESH_RATE_ms 500
-#define TIEMPO_DE_DIAGNOSTICO_ms 2000
 
 #define NO_OPRIMIDO	0
 #define DEBOUNCE	1
@@ -89,74 +88,82 @@ int tiempo_de_pulsacion = -1;
 
 static void initHardware(void)
 {
+	Board_Init();
 	SystemCoreClockUpdate();
-
-	   Board_Init();
-	   // Chip_GPIO_SetPinDirOutput(LPC_GPIO, num_puerto, num_pin);
-	   // Chip_GPIO_SetPinDirInput(LPC_GPIO, num_puerto, num_pin);
-	   // Chip_GPIO_GetPinState(LPC_GPIO, num_puerto, num_pin);
-	    Chip_IOCON_PinMuxSet(LPC_IOCON,0,26,FUNC0);
-	    Chip_IOCON_PinMuxSet(LPC_IOCON,2,0,FUNC0);
-	    Chip_IOCON_PinMuxSet(LPC_IOCON,2,1,FUNC0);
-	    Chip_IOCON_PinMuxSet(LPC_IOCON,2,10,FUNC0);
-	    Chip_GPIO_SetPinDIROutput(LPC_GPIO,0,26); //Azul
-	    Chip_GPIO_SetPinDIROutput(LPC_GPIO,2,0); // Rojo
-	    Chip_GPIO_SetPinDIROutput(LPC_GPIO,2,1); // Verde
-	    Chip_GPIO_SetPinDIRInput(LPC_GPIO,2,10); // Pulsador
-
+	SysTick_Config(SystemCoreClock / 1000);
 }
 
 void JuegoDeLuces(void *pvParameters)
 {
-	unsigned int estado_de_salidas = 1; //random
+	unsigned int estado_de_salidas = 0; //random
+	unsigned int sentido  = 0;
+	unsigned int continua = 1;
 	TECLA tecla;
-	tecla.codigo = BOTON_NO_PRESIONADO;
+	portTickType xMeDesperte;
+	xMeDesperte = xTaskGetTickCount();
+
 	//Loop infinito
 	while(1)
 	{
+	    //chequeo si debe cambiar el sentido
+		if(xQueueReceive( xQueue, &tecla, 0 ) == pdTRUE)
+			sentido^=0x01;
 
-		//la suspendo hasta que alguien envíe un mensaje por la cola
-		if(xQueueReceive( xQueue, &tecla, portMAX_DELAY ) == pdTRUE){
-			if(tecla.codigo == BOTON_PRESIONADO){
-				estado_de_salidas++;
-				if(estado_de_salidas == 8)
-				{
-					estado_de_salidas = 0x1;
-				}
-				//Red activity
-				if (estado_de_salidas&MASK_REDLIGHT)
-					// Chip_GPIO_SetPinOutLow(LPC_GPIO, num_puerto, num_pin);
-					Chip_GPIO_SetPinOutLow(LPC_GPIO,2,0);
 
-				else
+	    //chequeo si debe parar la secuencia
+		if(xQueueReceive( xQueue2, &tecla, 0 ) == pdTRUE)
+			continua=0;
 
-					Chip_GPIO_SetPinOutHigh(LPC_GPIO,2,0);
+	    //chequeo si debe seguir la secuencia
+		if(xQueueReceive( xQueue3, &tecla, 0 ) == pdTRUE)
+			continua=1;
 
-				//Green activity
-				if (estado_de_salidas&MASK_GREENLIGHT)
+		if(continua){
+		if (!sentido)
+			estado_de_salidas++;
+		else
+			estado_de_salidas--;
 
-					Chip_GPIO_SetPinOutLow(LPC_GPIO,2,1);
-
-				else
-					Chip_GPIO_SetPinOutHigh(LPC_GPIO,2,1);
-
-				//Blue activity
-				if (estado_de_salidas&MASK_BLUELIGHT)
-
-					Chip_GPIO_SetPinOutLow(LPC_GPIO,0,26);
-
-				else
-					Chip_GPIO_SetPinOutHigh(LPC_GPIO,0,26);
-
-			}
+		switch(estado_de_salidas)
+		{
+		case 8:
+			estado_de_salidas = 0x1;
+			break;
+		case 0:
+			estado_de_salidas = 0x7;
+			break;
 		}
-	}
+
+		//Red activity
+		if (estado_de_salidas&MASK_REDLIGHT)
+			Board_LED_Set(3, 1);
+		else
+			Board_LED_Set(3, 0);
+
+		//Green activity
+		if (estado_de_salidas&MASK_GREENLIGHT)
+			Board_LED_Set(4, 1);
+		else
+			Board_LED_Set(4, 0);
+
+		//Blue activity
+		if (estado_de_salidas&MASK_BLUELIGHT)
+			Board_LED_Set(5, 1);
+		else
+			Board_LED_Set(5, 0);
+
+
+		//Con el delay de la tarea, la suspendo hasta finalizar el tiempo
+		vTaskDelayUntil(&xMeDesperte,REFRESH_RATE_ms/portTICK_RATE_MS);
+
+	}}
+
 }
 
 void Diagnostico(void *pvParameters)
 {
 
-	//	vPrint("Comienza el diagnostico\n")
+	// vPrintString("Comienza el diagnostico\n");
 	//Loop infinito
 	while(1)
 	{
@@ -179,8 +186,6 @@ void Diagnostico(void *pvParameters)
 
 }
 
-
-
 void TeclaEvent (void *pvParameters)
 {
 	unsigned int EstadoDebounce = NO_OPRIMIDO;
@@ -198,7 +203,7 @@ void TeclaEvent (void *pvParameters)
 	switch(EstadoDebounce){
 		case NO_OPRIMIDO:
 			vTaskDelayUntil(&xMeDesperte,SCAN_RATE_ms/portTICK_RATE_MS);
-			if(Chip_GPIO_GetPinState(LPC_GPIO,2,10))	//Si retorna una opresión
+			if((unsigned int)Buttons_GetStatus()&((unsigned int)(pvParameters)))	//Si retorna una opresión
 				EstadoDebounce = DEBOUNCE;		//Indico que esta corriendo el tiempo Debounce
 			break;
 
@@ -207,7 +212,7 @@ void TeclaEvent (void *pvParameters)
 			EstadoDebounce = VALIDAR;
 
 		case VALIDAR:
-			if(Chip_GPIO_GetPinState(LPC_GPIO,2,10))			//Si retorna algo sigue presionado
+			if((unsigned int)Buttons_GetStatus()&(unsigned int)(pvParameters))			//Si retorna algo sigue presionado
 			{
 				EstadoDebounce=OPRIMIDO;
 				tiempo_de_pulsacion = 0;
@@ -217,13 +222,25 @@ void TeclaEvent (void *pvParameters)
 			break;
 
 		case OPRIMIDO:
-			if(!Chip_GPIO_GetPinState(LPC_GPIO,2,10)) //No envio mensaje hasta no soltar
+			if(!((unsigned int)Buttons_GetStatus()&(unsigned int)(pvParameters))) //No envio mensaje hasta no soltar
 			{
 				tecla.codigo = BOTON_PRESIONADO;
 				tecla.tiempo = tiempo_de_pulsacion;
 				tiempo_de_pulsacion = -1;
 				//Envío a la cola, optamos por no bloquear si está llena
-				xQueueSend( xQueue, &tecla, 0 );
+				switch((unsigned int)(pvParameters))
+				{
+					case 0x01:
+						xQueueSend( xQueue, &tecla, 0 );
+						break;
+					case 0x02:
+						xQueueSend( xQueue2, &tecla, 0 );
+						break;
+					case 0x04:
+						xQueueSend( xQueue3, &tecla, 0 );
+						break;
+				}
+
 				EstadoDebounce = NO_OPRIMIDO;
 			}
 			break;
@@ -231,6 +248,7 @@ void TeclaEvent (void *pvParameters)
 		}
 	}
 }
+
 int main(void) {
 
 	// TODO: insert code here
@@ -240,9 +258,10 @@ int main(void) {
 
 	//Trace del RTOS
 	//traceSTART();
-
 	xQueue = xQueueCreate(5,sizeof(TECLA));
-
+	xQueue2 = xQueueCreate(5,sizeof(TECLA));
+	xQueue3 = xQueueCreate(5,sizeof(TECLA));
+	unsigned int vParameter[]={1,2,4};
 	//Creación de las tareas
 	// xTaskCreate( pvTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pxCreatedTask )
 	xTaskCreate(	JuegoDeLuces, (signed portCHAR* )
@@ -259,9 +278,23 @@ int main(void) {
 					tskIDLE_PRIORITY+1,
 					NULL );
 	xTaskCreate(	TeclaEvent,
-					( signed portCHAR* )"Tecl",
+					( signed portCHAR* )"Tecl1",
 					configMINIMAL_STACK_SIZE,
-					NULL,
+					(void*)vParameter[0],
+					tskIDLE_PRIORITY+2,
+					NULL );
+
+	xTaskCreate(	TeclaEvent,
+					( signed portCHAR* )"Tecl2",
+					configMINIMAL_STACK_SIZE,
+					(void*)vParameter[1],
+					tskIDLE_PRIORITY+2,
+					NULL );
+
+	xTaskCreate(	TeclaEvent,
+					( signed portCHAR* )"Tecl3",
+					configMINIMAL_STACK_SIZE,
+					(void*)vParameter[2],
 					tskIDLE_PRIORITY+2,
 					NULL );
 
